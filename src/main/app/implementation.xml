@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:file="http://www.mulesoft.org/schema/mule/file" xmlns:vm="http://www.mulesoft.org/schema/mule/vm"
+	xmlns:dw="http://www.mulesoft.org/schema/mule/ee/dw"
+	xmlns:db="http://www.mulesoft.org/schema/mule/db" xmlns:batch="http://www.mulesoft.org/schema/mule/batch" xmlns:tracking="http://www.mulesoft.org/schema/mule/ee/tracking" xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:spring="http://www.springframework.org/schema/beans" 
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://www.mulesoft.org/schema/mule/vm http://www.mulesoft.org/schema/mule/vm/current/mule-vm.xsd
+http://www.mulesoft.org/schema/mule/ee/dw http://www.mulesoft.org/schema/mule/ee/dw/current/dw.xsd
+http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans-current.xsd
+http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd
+http://www.mulesoft.org/schema/mule/ee/tracking http://www.mulesoft.org/schema/mule/ee/tracking/current/mule-tracking-ee.xsd
+http://www.mulesoft.org/schema/mule/batch http://www.mulesoft.org/schema/mule/batch/current/mule-batch.xsd
+http://www.mulesoft.org/schema/mule/file http://www.mulesoft.org/schema/mule/file/current/mule-file.xsd">
+    <batch:job name="implementationBatch">
+        <batch:input>
+            <poll doc:name="Poll">
+                <fixed-frequency-scheduler frequency="5" timeUnit="SECONDS"/>
+                <watermark variable="lastTransactionID" default-expression="0" selector="MAX" selector-expression="#[payload.transactionID]"/>
+                <db:select config-ref="MySQL_Configuration" doc:name="Database">
+                    <db:parameterized-query><![CDATA[SELECT * 
+FROM ${db.table}
+WHERE transactionID > #[flowVars.lastTransactionID]]]></db:parameterized-query>
+                </db:select>
+            </poll>
+        </batch:input>
+        <batch:process-records>
+            <batch:step name="Validate_Step">
+                <enricher source="#[message.payload]" target="#[recordVars.valid]" doc:name="Validate for audit">
+                    <vm:outbound-endpoint exchange-pattern="request-response" path="validate" doc:name="validateVM"/>
+                </enricher>
+            </batch:step>
+            <batch:step name="Commit_Step" accept-expression="#[recordVars.valid]">
+                <batch:commit size="50" doc:name="Batch Commit">
+                    <dw:transform-message doc:name="Transform Message">
+                        <dw:set-payload><![CDATA[%dw 1.0
+%output application/csv
+---
+payload]]></dw:set-payload>
+                    </dw:transform-message>
+                    <set-variable variableName="datetime" value="#[server.dateTime.format(&quot;yyyy-MM-dd-hh_mm_ss&quot;)]" doc:name="datetime"/>
+                    <file:outbound-endpoint path="src/main/resources/output" outputPattern="batchAuditFile_#[flowVars.datetime].csv" responseTimeout="10000" doc:name="File"/>
+                </batch:commit>
+            </batch:step>
+        </batch:process-records>
+    </batch:job>
+    <flow name="VMValidateFlow-ForDevOnly">
+        <vm:inbound-endpoint exchange-pattern="request-response" path="validate" doc:name="validateVM"/>
+        <dw:transform-message doc:name="Validate">
+            <dw:set-payload><![CDATA[%dw 1.0
+
+%output application/java
+---
+true when ((payload.transactionID mod 4) == 0)
+	otherwise
+false]]></dw:set-payload>
+        </dw:transform-message>
+    </flow>
+</mule>
